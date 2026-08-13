@@ -25,6 +25,25 @@ def test_test_output_distills_and_round_trips(tmp_path: Path):
         assert store.get(result.ref) == raw
 
 
+def test_shell_launched_gradle_output_distills_and_round_trips(tmp_path: Path):
+    lines = ["Calculating task graph for tasks: test"]
+    lines += [f"> Task :module{i}:compileDebugKotlin UP-TO-DATE" for i in range(120)]
+    lines += [
+        "> Task :service:test",
+        "BUILD SUCCESSFUL in 42s",
+        "108 actionable tasks: 7 executed, 101 up-to-date",
+    ]
+    raw = ("\n".join(lines) + "\n").encode()
+
+    with OmissionStore(tmp_path / "gradle-store.db") as store:
+        result = distill_output(raw, command="sh ./gradlew test", store=store)
+        assert result.distilled
+        assert b"BUILD SUCCESSFUL" in result.output
+        assert b"distill#" in result.output
+        assert result.ref is not None
+        assert store.get(result.ref) == raw
+
+
 def test_unknown_command_falls_back_raw(tmp_path: Path):
     raw = ("hello\n" * 100).encode()
     with OmissionStore(tmp_path / "store.db") as store:
