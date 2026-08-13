@@ -181,7 +181,16 @@ def shell_for_tool(tool_name: str, tool_input: dict[str, Any]) -> ShellSpec | No
     if tool_name == "PowerShell":
         return _resolve_named_shell("powershell")
     if tool_name in {"shell_command", "Shell"}:
-        return _codex_default_shell(login=tool_input.get("login") is True)
+        login = tool_input.get("login") is True
+        selected = tool_input.get("shell")
+        if selected is not None:
+            if not isinstance(selected, str):
+                return None
+            kind = _kind_for_path(selected)
+            if kind is None:
+                return None
+            return _resolve_named_shell(kind, selected, login=login)
+        return _codex_default_shell(login=login)
     return None
 
 
