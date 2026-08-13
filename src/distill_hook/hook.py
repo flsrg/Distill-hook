@@ -5,10 +5,12 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
+from .executor import ShellSpec
 from .router import normalize_command, select_filter
 
 SHELL_TOOL_NAMES = {"shell_command", "Bash", "PowerShell", "Shell"}
@@ -30,6 +32,10 @@ SAFE_START_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+_LOG_COMMAND_RE = re.compile(r"^(?:docker\s+logs|kubectl\s+logs|journalctl|tail\s+-n)\b", re.I)
+_FOLLOW_FLAG_RE = re.compile(r"(?:^|\s)(?:-f|-F|--follow(?:=\S+)?)(?=\s|$)", re.I)
+_WATCH_FLAG_RE = re.compile(r"(?:^|\s)--watch(?:All)?(?:=\S+)?(?=\s|$)", re.I)
 
 
 def encode_command(command: str) -> str:
@@ -56,6 +62,12 @@ def allow_default_mode() -> bool:
     return bool(isinstance(data, dict) and data.get("allow_default_mode") is True)
 
 
+def _is_long_running_mode(command: str) -> bool:
+    if _WATCH_FLAG_RE.search(command):
+        return True
+    return bool(_LOG_COMMAND_RE.search(command) and _FOLLOW_FLAG_RE.search(command))
+
+
 def should_rewrite(command: str) -> bool:
     stripped = command.strip()
     if not stripped or "distill-hook run-encoded" in stripped:
@@ -65,29 +77,142 @@ def should_rewrite(command: str) -> bool:
     normalized = normalize_command(stripped)
     if not SAFE_START_RE.search(normalized):
         return False
+    if _is_long_running_mode(normalized):
+        return False
     if re.search(r"\bfind\b.*\s-(?:exec|delete|execdir|ok)\b", normalized):
         return False
     return select_filter(normalized) is not None
 
 
-def rewritten_command(command: str) -> str:
-    encoded = encode_command(command)
-    executable = os.environ.get("DISTILL_HOOK_COMMAND", "distill-hook")
+def _kind_for_path(path: str) -> str | None:
+    name = Path(path).stem.lower()
+    if name in {"bash", "zsh", "sh", "cmd"}:
+        return name
+    if name in {"pwsh", "powershell"}:
+        return "powershell"
+    return None
+
+
+def _existing(path: str | None) -> str | None:
+    if not path:
+        return None
+    return path if Path(path).is_file() else None
+
+
+def _resolve_named_shell(
+    kind: str,
+    preferred: str | None = None,
+    *,
+    login: bool = False,
+) -> ShellSpec | None:
+    if preferred and _kind_for_path(preferred) == kind:
+        existing = _existing(preferred)
+        if existing:
+            return ShellSpec(kind, existing, login)
+
+    names: tuple[str, ...]
+    fallbacks: tuple[str, ...]
+    if kind == "bash":
+        names, fallbacks = ("bash",), ("/bin/bash", "/usr/bin/bash")
+    elif kind == "zsh":
+        names, fallbacks = ("zsh",), ("/bin/zsh",)
+    elif kind == "sh":
+        names, fallbacks = ("sh",), ("/bin/sh",)
+    elif kind == "powershell":
+        names = ("pwsh", "powershell")
+        fallbacks = (
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "/usr/local/bin/pwsh",
+        )
+    elif kind == "cmd":
+        names = ("cmd.exe", "cmd")
+        fallbacks = tuple(filter(None, (os.environ.get("COMSPEC"),)))
+    else:
+        return None
+
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return ShellSpec(kind, found, login)
+    for path in fallbacks:
+        existing = _existing(path)
+        if existing:
+            return ShellSpec(kind, existing, login)
+    return None
+
+
+def _posix_user_shell() -> str | None:
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_shell or None
+    except Exception:
+        return None
+
+
+def _codex_default_shell(*, login: bool = False) -> ShellSpec | None:
     if os.name == "nt":
-        return f'{executable} run-encoded "{encoded}"'
-    return f"{shlex.quote(executable)} run-encoded {shlex.quote(encoded)}"
+        return _resolve_named_shell("powershell", login=login) or _resolve_named_shell(
+            "cmd", login=login
+        )
+
+    preferred = _posix_user_shell()
+    preferred_kind = _kind_for_path(preferred) if preferred else None
+    if preferred_kind in {"bash", "zsh", "sh"}:
+        resolved = _resolve_named_shell(preferred_kind, preferred, login=login)
+        if resolved is not None:
+            return resolved
+    fallback_order = (
+        ("zsh", "bash", "sh")
+        if sys.platform == "darwin"
+        else ("bash", "zsh", "sh")
+    )
+    for kind in fallback_order:
+        resolved = _resolve_named_shell(kind, login=login)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def shell_for_tool(tool_name: str, tool_input: dict[str, Any]) -> ShellSpec | None:
+    if tool_name == "Bash":
+        return _resolve_named_shell("bash")
+    if tool_name == "PowerShell":
+        return _resolve_named_shell("powershell")
+    if tool_name in {"shell_command", "Shell"}:
+        return _codex_default_shell(login=tool_input.get("login") is True)
+    return None
+
+
+def rewritten_command(command: str, shell: ShellSpec) -> str:
+    encoded = encode_command(command)
+    shell_path = encode_command(shell.executable)
+    executable = os.environ.get("DISTILL_HOOK_COMMAND", "distill-hook")
+    login_arg = " --login-shell" if shell.login else ""
+    args = (
+        f"run-encoded --shell-kind {shell.kind} --shell-path {shell_path}"
+        f"{login_arg} {encoded}"
+    )
+    if os.name == "nt":
+        return f"{executable} {args}"
+    return f"{shlex.quote(executable)} {args}"
 
 
 def handle_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     if payload.get("hook_event_name") != "PreToolUse":
         return None
-    if payload.get("tool_name") not in SHELL_TOOL_NAMES:
+    tool_name = payload.get("tool_name")
+    if tool_name not in SHELL_TOOL_NAMES:
         return None
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
     command = tool_input.get("command")
     if not isinstance(command, str) or not should_rewrite(command):
+        return None
+    shell = shell_for_tool(str(tool_name), tool_input)
+    if shell is None:
         return None
     permission_mode = payload.get("permission_mode")
     if permission_mode not in SAFE_PERMISSION_MODES and not allow_default_mode():
@@ -97,7 +222,7 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
             "permissionDecisionReason": "Distill noisy command output before returning it to the model.",
-            "updatedInput": {"command": rewritten_command(command)},
+            "updatedInput": {"command": rewritten_command(command, shell)},
         }
     }
 
