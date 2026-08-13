@@ -232,7 +232,10 @@ def rewritten_command(command: str, shell: ShellSpec) -> str:
         f"{login_arg} {encoded}"
     )
     if os.name == "nt":
-        return f"{subprocess.list2cmdline([executable])} {args}"
+        quoted_executable = subprocess.list2cmdline([executable])
+        if shell.kind == "powershell":
+            return f"& {quoted_executable} {args}"
+        return f"{quoted_executable} {args}"
     return f"{shlex.quote(executable)} {args}"
 
 
