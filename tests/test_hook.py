@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from distill_hook.executor import ShellSpec
 from distill_hook.hook import decode_command, handle_payload, install_codex_hook
 
 
@@ -44,6 +45,30 @@ def test_default_permission_mode_is_not_auto_approved(monkeypatch):
     assert handle_payload(p) is not None
 
 
+def test_rewrite_uses_installed_absolute_executable(tmp_path: Path, monkeypatch):
+    home = tmp_path / "codex-home"
+    executable = tmp_path / "pipx apps" / "distill-hook"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.delenv("DISTILL_HOOK_COMMAND", raising=False)
+
+    install_codex_hook(executable=str(executable))
+    monkeypatch.setattr(
+        "distill_hook.hook.shell_for_tool",
+        lambda _tool_name, _tool_input: ShellSpec("sh", "/bin/sh"),
+    )
+
+    response = handle_payload(payload("pytest -q"))
+    assert response is not None
+    rewritten = response["hookSpecificOutput"]["updatedInput"]["command"]
+    expected = shlex.quote(str(executable.absolute()))
+    assert rewritten.startswith(f"{expected} run-encoded ")
+
+    config = json.loads((home / "distill-hook" / "config.json").read_text(encoding="utf-8"))
+    assert config["executable"] == str(executable.absolute())
+
+
 def test_installer_preserves_existing_hooks_and_uses_absolute_path(
     tmp_path: Path, monkeypatch
 ):
@@ -79,9 +104,11 @@ def test_installer_preserves_existing_hooks_and_uses_absolute_path(
     install_codex_hook(allow_default=True, executable=str(executable))
     config = json.loads((home / "distill-hook" / "config.json").read_text(encoding="utf-8"))
     assert config["allow_default_mode"] is True
+    assert config["executable"] == str(executable.absolute())
     install_codex_hook(executable=str(executable))
     config2 = json.loads((home / "distill-hook" / "config.json").read_text(encoding="utf-8"))
     assert config2["allow_default_mode"] is True
+    assert config2["executable"] == str(executable.absolute())
 
 
 def test_installer_migrates_legacy_path_dependent_hook(tmp_path: Path, monkeypatch):
@@ -129,6 +156,28 @@ def test_installer_resolves_distill_hook_from_path(tmp_path: Path, monkeypatch):
     data = json.loads(path.read_text(encoding="utf-8"))
     command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert command == f"{shlex.quote(str(executable.absolute()))} codex-hook"
+
+
+def test_installer_custom_override_is_idempotent(tmp_path: Path, monkeypatch):
+    home = tmp_path / "codex-home"
+    executable = tmp_path / "custom apps" / "custom-distiller"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("DISTILL_HOOK_COMMAND", str(executable))
+    monkeypatch.setattr("distill_hook.hook.sys.argv", ["python"])
+
+    path = install_codex_hook()
+    install_codex_hook()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    handlers = data["hooks"]["PreToolUse"]
+    assert len(handlers) == 1
+    expected = f"{shlex.quote(str(executable.absolute()))} codex-hook"
+    assert handlers[0]["hooks"][0]["command"] == expected
+
+    config = json.loads((home / "distill-hook" / "config.json").read_text(encoding="utf-8"))
+    assert config["executable"] == str(executable.absolute())
 
 
 def test_installer_fails_clearly_when_executable_is_missing(tmp_path: Path, monkeypatch):
