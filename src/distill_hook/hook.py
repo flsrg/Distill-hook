@@ -56,15 +56,19 @@ def _config_path() -> Path:
     return codex_home() / "distill-hook" / "config.json"
 
 
+def _read_config() -> dict[str, Any]:
+    try:
+        data = json.loads(_config_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def allow_default_mode() -> bool:
     override = os.environ.get("DISTILL_HOOK_ALLOW_DEFAULT_MODE")
     if override is not None:
         return override.strip().lower() in {"1", "true", "yes", "on"}
-    try:
-        data = json.loads(_config_path().read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return bool(isinstance(data, dict) and data.get("allow_default_mode") is True)
+    return _read_config().get("allow_default_mode") is True
 
 
 def _is_long_running_mode(command: str) -> bool:
@@ -199,17 +203,36 @@ def shell_for_tool(tool_name: str, tool_input: dict[str, Any]) -> ShellSpec | No
     return None
 
 
+def _rewrite_executable() -> str:
+    override = os.environ.get("DISTILL_HOOK_COMMAND")
+    if override:
+        return override
+
+    configured = _read_config().get("executable")
+    if isinstance(configured, str):
+        configured_path = Path(configured).expanduser()
+        if configured_path.is_file():
+            return str(configured_path.absolute())
+
+    current = Path(sys.argv[0]).expanduser()
+    if current.name.lower() in {"distill-hook", "distill-hook.exe"} and current.is_file():
+        return str(current.absolute())
+
+    located = shutil.which("distill-hook")
+    return located or "distill-hook"
+
+
 def rewritten_command(command: str, shell: ShellSpec) -> str:
     encoded = encode_command(command)
     shell_path = encode_command(shell.executable)
-    executable = os.environ.get("DISTILL_HOOK_COMMAND", "distill-hook")
+    executable = _rewrite_executable()
     login_arg = " --login-shell" if shell.login else ""
     args = (
         f"run-encoded --shell-kind {shell.kind} --shell-path {shell_path}"
         f"{login_arg} {encoded}"
     )
     if os.name == "nt":
-        return f"{executable} {args}"
+        return f"{subprocess.list2cmdline([executable])} {args}"
     return f"{shlex.quote(executable)} {args}"
 
 
@@ -298,11 +321,16 @@ def _hook_command(executable: str) -> str:
     return f"{quoted} codex-hook"
 
 
-def _is_distill_hook_handler(handler: dict[str, Any]) -> bool:
+def _is_distill_hook_handler(handler: dict[str, Any], marker: str | None = None) -> bool:
     if handler.get("type") != "command":
         return False
     command = handler.get("command")
-    return isinstance(command, str) and bool(_DISTILL_HOOK_HANDLER_RE.search(command.strip()))
+    if not isinstance(command, str):
+        return False
+    normalized = command.strip()
+    if marker is not None and normalized == marker.strip():
+        return True
+    return bool(_DISTILL_HOOK_HANDLER_RE.search(normalized))
 
 
 def install_codex_hook(
@@ -340,7 +368,7 @@ def install_codex_hook(
         if not isinstance(handlers, list):
             continue
         for handler in handlers:
-            if isinstance(handler, dict) and _is_distill_hook_handler(handler):
+            if isinstance(handler, dict) and _is_distill_hook_handler(handler, marker):
                 installed = True
                 if handler.get("command") != marker:
                     handler["command"] = marker
@@ -367,22 +395,9 @@ def install_codex_hook(
 
     config_path = _config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_allow = False
-    if config_path.exists():
-        try:
-            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
-            existing_allow = bool(
-                isinstance(existing_config, dict)
-                and existing_config.get("allow_default_mode") is True
-            )
-        except Exception:
-            existing_allow = False
-    config_path.write_text(
-        json.dumps(
-            {"allow_default_mode": bool(allow_default or existing_allow)},
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    existing_config = _read_config()
+    existing_allow = existing_config.get("allow_default_mode") is True
+    existing_config["allow_default_mode"] = bool(allow_default or existing_allow)
+    existing_config["executable"] = resolved_executable
+    config_path.write_text(json.dumps(existing_config, indent=2) + "\n", encoding="utf-8")
     return path
