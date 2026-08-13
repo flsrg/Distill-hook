@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from .engine import distill_output
-from .executor import run_command
+from .executor import ShellSpec, run_command
 from .hook import decode_command, hook_main, install_codex_hook
 from .markers import parse_ref
 from .store import OmissionStore
@@ -19,9 +19,16 @@ def _write_bytes(data: bytes) -> None:
         stream.flush()
 
 
-def run_encoded(encoded: str) -> int:
+def run_encoded(
+    encoded: str,
+    *,
+    shell_kind: str,
+    shell_path_encoded: str,
+    login_shell: bool = False,
+) -> int:
     command = decode_command(encoded)
-    raw, code = run_command(command)
+    shell = ShellSpec(shell_kind, decode_command(shell_path_encoded), login_shell)
+    raw, code = run_command(command, shell=shell)
     try:
         with OmissionStore() as store:
             store.prune()
@@ -55,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     encoded = sub.add_parser("run-encoded", help=argparse.SUPPRESS)
+    encoded.add_argument(
+        "--shell-kind",
+        choices=("bash", "zsh", "sh", "powershell", "cmd"),
+        required=True,
+    )
+    encoded.add_argument("--shell-path", required=True, help=argparse.SUPPRESS)
+    encoded.add_argument("--login-shell", action="store_true", help=argparse.SUPPRESS)
     encoded.add_argument("payload")
 
     sub.add_parser("codex-hook", help="Run the Codex PreToolUse hook on stdin")
@@ -78,7 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run-encoded":
-        return run_encoded(args.payload)
+        return run_encoded(
+            args.payload,
+            shell_kind=args.shell_kind,
+            shell_path_encoded=args.shell_path,
+            login_shell=args.login_shell,
+        )
     if args.command == "codex-hook":
         return hook_main()
     if args.command == "expand":
