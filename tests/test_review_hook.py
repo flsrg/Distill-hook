@@ -24,6 +24,17 @@ def test_follow_and_watch_modes_are_left_unwrapped():
     assert should_rewrite(docker + " logs app")
 
 
+def test_simple_shell_gradle_launchers_are_rewritten_safely():
+    assert should_rewrite("sh ./gradlew test")
+    assert should_rewrite("bash ./gradlew connectedDebugAndroidTest")
+    assert should_rewrite("/bin/sh ./gradlew test")
+
+    assert not should_rewrite("sh -c ./gradlew test")
+    assert not should_rewrite("bash -lc ./gradlew test")
+    assert not should_rewrite("sh ./gradlew test && echo done")
+    assert not should_rewrite("bash ./gradlew test | tee build.log")
+
+
 def test_bash_tool_passes_bash_descriptor_to_wrapper():
     response = handle_payload(_payload("py" + "test -q", "Bash"))
     if shutil.which("bash") is None:
