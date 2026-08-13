@@ -9,6 +9,11 @@ WRAPPER_PREFIX_RE = re.compile(
     r"^(?:(?:env\s+)?(?:uv\s+run|uvx|npx|pnpm\s+exec|poetry\s+run|python\s+-m)\s+)+",
     re.IGNORECASE,
 )
+SIMPLE_SHELL_PREFIX_RE = re.compile(
+    r"^(?:(?:/usr/bin/|/bin/)?(?:sh|bash))\s+(?![\s-])",
+    re.IGNORECASE,
+)
+LOCAL_EXEC_PREFIX_RE = re.compile(r"^\.[/\\](?=[^/\\\s]+(?:\s|$))")
 
 
 def normalize_command(command: str) -> str:
@@ -18,6 +23,8 @@ def normalize_command(command: str) -> str:
     while text != previous:
         previous = text
         text = WRAPPER_PREFIX_RE.sub("", text)
+        text = SIMPLE_SHELL_PREFIX_RE.sub("", text)
+        text = LOCAL_EXEC_PREFIX_RE.sub("", text)
     return text
 
 
