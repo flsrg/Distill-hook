@@ -34,3 +34,24 @@ def test_bash_tool_passes_bash_descriptor_to_wrapper():
     assert "--shell-kind bash" in rewritten
     encoded = rewritten.split()[-1].strip("'\"")
     assert decode_command(encoded) == "py" + "test -q"
+
+
+def test_shell_tools_honor_explicit_shell_descriptor(tmp_path):
+    explicit_shell = tmp_path / "sh"
+    explicit_shell.write_text("", encoding="utf-8")
+
+    for tool_name in ("shell_command", "Shell"):
+        request = _payload("py" + "test -q", tool_name)
+        request["tool_input"]["shell"] = str(explicit_shell)
+        request["tool_input"]["login"] = True
+
+        response = handle_payload(request)
+        assert response is not None
+        rewritten = response["hookSpecificOutput"]["updatedInput"]["command"]
+        parts = rewritten.split()
+
+        kind_index = parts.index("--shell-kind")
+        path_index = parts.index("--shell-path")
+        assert parts[kind_index + 1] == "sh"
+        assert decode_command(parts[path_index + 1]) == str(explicit_shell)
+        assert "--login-shell" in parts
