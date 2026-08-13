@@ -1,5 +1,8 @@
 import json
+import shlex
 from pathlib import Path
+
+import pytest
 
 from distill_hook.hook import decode_command, handle_payload, install_codex_hook
 
@@ -41,8 +44,16 @@ def test_default_permission_mode_is_not_auto_approved(monkeypatch):
     assert handle_payload(p) is not None
 
 
-def test_installer_preserves_existing_hooks(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+def test_installer_preserves_existing_hooks_and_uses_absolute_path(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    executable = tmp_path / "pipx apps" / "distill-hook"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+
     existing = {
         "hooks": {
             "PreToolUse": [
@@ -53,17 +64,78 @@ def test_installer_preserves_existing_hooks(tmp_path: Path, monkeypatch):
             ]
         }
     }
-    (tmp_path / "hooks.json").write_text(json.dumps(existing), encoding="utf-8")
-    path = install_codex_hook()
+    (home / "hooks.json").write_text(json.dumps(existing), encoding="utf-8")
+
+    path = install_codex_hook(executable=str(executable))
     data = json.loads(path.read_text(encoding="utf-8"))
     assert len(data["hooks"]["PreToolUse"]) == 2
-    install_codex_hook()
+    installed_command = data["hooks"]["PreToolUse"][1]["hooks"][0]["command"]
+    assert installed_command == f"{shlex.quote(str(executable.absolute()))} codex-hook"
+
+    install_codex_hook(executable=str(executable))
     data2 = json.loads(path.read_text(encoding="utf-8"))
     assert len(data2["hooks"]["PreToolUse"]) == 2
 
-    install_codex_hook(allow_default=True)
-    config = json.loads((tmp_path / "distill-hook" / "config.json").read_text(encoding="utf-8"))
+    install_codex_hook(allow_default=True, executable=str(executable))
+    config = json.loads((home / "distill-hook" / "config.json").read_text(encoding="utf-8"))
     assert config["allow_default_mode"] is True
-    install_codex_hook()
-    config2 = json.loads((tmp_path / "distill-hook" / "config.json").read_text(encoding="utf-8"))
+    install_codex_hook(executable=str(executable))
+    config2 = json.loads((home / "distill-hook" / "config.json").read_text(encoding="utf-8"))
     assert config2["allow_default_mode"] is True
+
+
+def test_installer_migrates_legacy_path_dependent_hook(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    executable = tmp_path / "bin" / "distill-hook"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    legacy = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "^(?:shell_command|Bash|PowerShell|Shell)$",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "distill-hook codex-hook",
+                            "timeout": 5,
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    (home / "hooks.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    path = install_codex_hook(executable=str(executable))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    handlers = data["hooks"]["PreToolUse"]
+    assert len(handlers) == 1
+    assert handlers[0]["hooks"][0]["command"] == f"{shlex.quote(str(executable.absolute()))} codex-hook"
+
+
+def test_installer_resolves_distill_hook_from_path(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    executable = tmp_path / "pipx" / "distill-hook"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr("distill_hook.hook.shutil.which", lambda name: str(executable) if name == "distill-hook" else None)
+    monkeypatch.setattr("distill_hook.hook.sys.argv", ["python"])
+
+    path = install_codex_hook()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert command == f"{shlex.quote(str(executable.absolute()))} codex-hook"
+
+
+def test_installer_fails_clearly_when_executable_is_missing(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.delenv("DISTILL_HOOK_COMMAND", raising=False)
+    monkeypatch.setattr("distill_hook.hook.shutil.which", lambda _name: None)
+    monkeypatch.setattr("distill_hook.hook.sys.argv", ["python"])
+
+    with pytest.raises(RuntimeError, match="Cannot locate the distill-hook executable"):
+        install_codex_hook()

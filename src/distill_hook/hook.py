@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,10 @@ SAFE_START_RE = re.compile(
 _LOG_COMMAND_RE = re.compile(r"^(?:docker\s+logs|kubectl\s+logs|journalctl|tail\s+-n)\b", re.I)
 _FOLLOW_FLAG_RE = re.compile(r"(?:^|\s)(?:-f|-F|--follow(?:=\S+)?)(?=\s|$)", re.I)
 _WATCH_FLAG_RE = re.compile(r"(?:^|\s)--watch(?:All)?(?:=\S+)?(?=\s|$)", re.I)
+_DISTILL_HOOK_HANDLER_RE = re.compile(
+    r"(?:^|[/\\])distill-hook(?:\.exe)?(?:['\"])?\s+codex-hook\s*$",
+    re.IGNORECASE,
+)
 
 
 def encode_command(command: str) -> str:
@@ -254,7 +259,57 @@ def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
 
 
-def install_codex_hook(*, allow_default: bool = False) -> Path:
+def _resolve_hook_executable(executable: str | None = None) -> str:
+    """Resolve the CLI path now so Codex Desktop does not depend on its PATH."""
+    candidates: list[str] = []
+    if executable:
+        candidates.append(executable)
+    else:
+        override = os.environ.get("DISTILL_HOOK_COMMAND")
+        if override:
+            candidates.append(override)
+        if Path(sys.argv[0]).name.lower() in {"distill-hook", "distill-hook.exe"}:
+            candidates.append(sys.argv[0])
+        located = shutil.which("distill-hook")
+        if located:
+            candidates.append(located)
+
+    for candidate in candidates:
+        expanded = str(Path(candidate).expanduser())
+        path = Path(expanded)
+        if not path.is_absolute():
+            located = shutil.which(expanded)
+            if located:
+                path = Path(located)
+        if path.is_file():
+            return str(path.absolute())
+
+    raise RuntimeError(
+        "Cannot locate the distill-hook executable. Install it with pipx or ensure "
+        "distill-hook is available on PATH before running install-hook."
+    )
+
+
+def _hook_command(executable: str) -> str:
+    if os.name == "nt":
+        quoted = subprocess.list2cmdline([executable])
+    else:
+        quoted = shlex.quote(executable)
+    return f"{quoted} codex-hook"
+
+
+def _is_distill_hook_handler(handler: dict[str, Any]) -> bool:
+    if handler.get("type") != "command":
+        return False
+    command = handler.get("command")
+    return isinstance(command, str) and bool(_DISTILL_HOOK_HANDLER_RE.search(command.strip()))
+
+
+def install_codex_hook(
+    *,
+    allow_default: bool = False,
+    executable: str | None = None,
+) -> Path:
     home = codex_home()
     home.mkdir(parents=True, exist_ok=True)
     path = home / "hooks.json"
@@ -274,16 +329,22 @@ def install_codex_hook(*, allow_default: bool = False) -> Path:
     if not isinstance(pre, list):
         raise RuntimeError(f"Expected hooks.PreToolUse array in {path}")
 
-    marker = "distill-hook codex-hook"
+    resolved_executable = _resolve_hook_executable(executable)
+    marker = _hook_command(resolved_executable)
     installed = False
+    changed = False
     for group in pre:
-        if isinstance(group, dict):
-            handlers = group.get("hooks")
-            if isinstance(handlers, list) and any(
-                isinstance(h, dict) and marker in str(h.get("command", "")) for h in handlers
-            ):
+        if not isinstance(group, dict):
+            continue
+        handlers = group.get("hooks")
+        if not isinstance(handlers, list):
+            continue
+        for handler in handlers:
+            if isinstance(handler, dict) and _is_distill_hook_handler(handler):
                 installed = True
-                break
+                if handler.get("command") != marker:
+                    handler["command"] = marker
+                    changed = True
 
     if not installed:
         pre.append(
@@ -299,7 +360,11 @@ def install_codex_hook(*, allow_default: bool = False) -> Path:
                 ],
             }
         )
+        changed = True
+
+    if changed or not path.exists():
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
     config_path = _config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     existing_allow = False
