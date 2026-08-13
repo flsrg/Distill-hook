@@ -8,9 +8,14 @@ from .base import FilterResult, OutputFilter, head_tail_with_errors, is_error_li
 class TestOutputFilter(OutputFilter):
     name = "tests"
     min_lines = 24
+    _EXEC = r"(?:\S*[/\\])?"
     COMMAND_RE = re.compile(
-        r"(?:^|[;&|]\s*|\b)(?:pytest|py\.test|jest|vitest|cargo\s+(?:test|nextest)|"
-        r"go\s+test|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+test)\b",
+        rf"^(?:{_EXEC}(?:pytest|py\.test|jest|vitest)|"
+        rf"{_EXEC}cargo\s+(?:test|nextest)|"
+        rf"{_EXEC}go\s+test|"
+        rf"{_EXEC}npm\s+(?:test|run\s+test)|"
+        rf"{_EXEC}pnpm\s+(?:test|run\s+test)|"
+        rf"{_EXEC}yarn\s+test)\b",
         re.IGNORECASE,
     )
 
