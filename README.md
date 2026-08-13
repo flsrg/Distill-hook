@@ -85,17 +85,25 @@ distill-hook install-hook
 
 The installer:
 
-- creates or updates `${CODEX_HOME:-~/.codex}/hooks.json`;
+- creates or updates `${CODEX_HOME:-$HOME/.codex}/hooks.json`;
 - preserves unrelated existing hooks;
 - registers a `PreToolUse` handler for supported shell tools;
 - resolves the installed `distill-hook` executable to an **absolute path** so the desktop app does not depend on your interactive shell's `PATH`;
-- stores the resolved executable in `~/.codex/distill-hook/config.json` so rewritten commands reuse the same absolute path.
+- stores the resolved executable in `${CODEX_HOME:-$HOME/.codex}/distill-hook/config.json` so rewritten commands reuse the same absolute path.
 
-Verify the generated files:
+If `CODEX_HOME` is set, both generated files are written beneath that directory. Otherwise Codex uses `$HOME/.codex`.
+
+For verification commands, resolve the effective Codex directory once:
 
 ```bash
-cat ~/.codex/hooks.json
-cat ~/.codex/distill-hook/config.json
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+```
+
+Then inspect the generated files:
+
+```bash
+cat "$CODEX_DIR/hooks.json"
+cat "$CODEX_DIR/distill-hook/config.json"
 ```
 
 The hook command in `hooks.json` should contain an absolute executable path, conceptually:
@@ -133,7 +141,7 @@ On desktop:
 
 ### Safe mode — default
 
-A normal installation uses:
+A fresh installation uses:
 
 ```bash
 distill-hook install-hook
@@ -143,9 +151,11 @@ In safe mode, Distill Hook rewrites commands only when the incoming Codex permis
 
 This is intentionally conservative because Codex currently requires a `PreToolUse` hook that returns `updatedInput` to also return an `allow` permission decision.
 
+**Important:** safe mode is the default for a fresh configuration, but a previous default-mode opt-in is persistent. If `allow_default_mode` is already `true`, running `distill-hook install-hook` without `--allow-default-mode` does **not** turn it back off. See **Return to safe mode** below.
+
 ### Normal/default Codex approval mode — explicit opt-in
 
-If the hook is installed correctly but does not trigger in your normal Codex session, and you explicitly accept the approval-flow tradeoff, reinstall the hook with:
+If the hook is installed correctly but does not trigger in your normal Codex session, and you explicitly accept the approval-flow tradeoff, enable default-mode rewriting with:
 
 ```bash
 distill-hook install-hook --allow-default-mode
@@ -154,7 +164,8 @@ distill-hook install-hook --allow-default-mode
 Then verify:
 
 ```bash
-cat ~/.codex/distill-hook/config.json
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+cat "$CODEX_DIR/distill-hook/config.json"
 ```
 
 You should see:
@@ -167,6 +178,36 @@ You should see:
 ```
 
 Use this option deliberately: when Distill Hook mutates a tool input, it returns an `allow` decision for that rewritten command.
+
+Once enabled, this opt-in remains enabled across later `install-hook` runs, including flagless reinstalls and updates.
+
+### Return to safe mode
+
+There is currently no `install-hook` flag that resets an existing `allow_default_mode: true` value. To return to safe mode:
+
+1. Resolve the effective Codex directory:
+
+   ```bash
+   CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+   ```
+
+2. Open `$CODEX_DIR/distill-hook/config.json` and change:
+
+   ```json
+   "allow_default_mode": true
+   ```
+
+   to:
+
+   ```json
+   "allow_default_mode": false
+   ```
+
+3. If you previously set the `DISTILL_HOOK_ALLOW_DEFAULT_MODE` environment variable, unset or remove that override as well, because it takes precedence over the config file.
+4. Run `distill-hook install-hook` again if you also want to refresh the stored executable path.
+5. Fully quit and reopen the ChatGPT desktop app.
+
+Verify that the config now contains `"allow_default_mode": false` before assuming safe mode is restored.
 
 # Verify that distillation is working
 
@@ -250,11 +291,9 @@ Then run the installer again so the executable path and config are refreshed:
 distill-hook install-hook
 ```
 
-If you previously enabled default-mode rewriting and want to keep it enabled, use:
+**A flagless reinstall does not disable a previous default-mode opt-in.** If `${CODEX_HOME:-$HOME/.codex}/distill-hook/config.json` already contains `"allow_default_mode": true`, the installer preserves that value. You do not need to pass `--allow-default-mode` again to keep it enabled.
 
-```bash
-distill-hook install-hook --allow-default-mode
-```
+If you want to disable the opt-in and return to safe mode, follow the **Return to safe mode** procedure above; simply omitting the flag is not sufficient.
 
 Finally, fully quit and reopen the ChatGPT desktop app.
 
@@ -283,8 +322,9 @@ and reinstall the package.
 Check:
 
 ```bash
-cat ~/.codex/hooks.json
-cat ~/.codex/distill-hook/config.json
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+cat "$CODEX_DIR/hooks.json"
+cat "$CODEX_DIR/distill-hook/config.json"
 ```
 
 Common reasons:
@@ -305,12 +345,13 @@ This can be normal. Distill Hook returns raw output when:
 
 ## Verify the stored executable path
 
-The executable in these two files should agree:
+The executable in these locations should agree:
 
 ```bash
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 which distill-hook
-cat ~/.codex/hooks.json
-cat ~/.codex/distill-hook/config.json
+cat "$CODEX_DIR/hooks.json"
+cat "$CODEX_DIR/distill-hook/config.json"
 ```
 
 If they do not, rerun:
