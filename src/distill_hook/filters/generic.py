@@ -25,6 +25,7 @@ class LintBuildFilter(OutputFilter):
             keep: set[int] = set()
             for i in error_indices:
                 keep.update(range(max(0, i - 3), min(len(lines), i + 6)))
+            keep.update(range(max(0, len(lines) - 8), len(lines)))
             compact: list[str] = []
             prev = None
             for i in sorted(keep):
@@ -32,7 +33,6 @@ class LintBuildFilter(OutputFilter):
                     compact.append(f"... {i - prev - 1} build lines omitted ...")
                 compact.append(lines[i])
                 prev = i
-            compact.extend(lines[-8:])
         else:
             compact = head_tail_with_errors(lines, head=14, tail=18)
         return FilterResult("\n".join(compact), len(compact))
