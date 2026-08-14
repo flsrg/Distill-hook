@@ -113,6 +113,8 @@ def _split_safe_read_only_prelude(command: str) -> tuple[str, str] | None:
 
     prelude = match.group("prelude")
     tail = match.group("tail")
+    if UNSAFE_META_RE.search(prelude):
+        return None
     try:
         args = shlex.split(prelude, posix=True)
     except ValueError:

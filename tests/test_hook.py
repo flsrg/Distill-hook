@@ -68,6 +68,22 @@ def test_does_not_rewrite_unsafe_compounds(command, monkeypatch):
     assert handle_payload(payload(command)) is None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -n '1,240p' \"$(printf /tmp/SKILL.md)\" && sh ./gradlew test",
+        "sed -n '1,240p' \"`printf /tmp/SKILL.md`\" && sh ./gradlew test",
+    ],
+)
+def test_does_not_rewrite_sed_prelude_with_shell_substitution(command, monkeypatch):
+    monkeypatch.setattr(
+        "distill_hook.hook.shell_for_tool",
+        lambda _tool_name, _tool_input: ShellSpec("bash", "/bin/bash"),
+    )
+
+    assert handle_payload(payload(command)) is None
+
+
 def test_preserves_quoted_sed_prelude(monkeypatch):
     monkeypatch.setattr(
         "distill_hook.hook.shell_for_tool",
