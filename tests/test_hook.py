@@ -34,6 +34,70 @@ def test_does_not_rewrite_unknown_or_unsafe_shell_shape():
     assert handle_payload(payload("pytest -q | tee results.txt")) is None
 
 
+def test_rewrites_noisy_tail_after_read_only_sed_prelude(monkeypatch):
+    monkeypatch.setattr(
+        "distill_hook.hook.shell_for_tool",
+        lambda _tool_name, _tool_input: ShellSpec("bash", "/bin/bash"),
+    )
+    command = "sed -n '1,240p' /tmp/SKILL.md && sh ./gradlew test"
+
+    response = handle_payload(payload(command))
+    assert response is not None
+    rewritten = response["hookSpecificOutput"]["updatedInput"]["command"]
+
+    assert rewritten.startswith("sed -n '1,240p' /tmp/SKILL.md && ")
+    encoded = rewritten.split()[-1].strip("'\"")
+    assert decode_command(encoded) == "sh ./gradlew test"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hello && sh ./gradlew test",
+        "sed -n '1e whoami' /tmp/SKILL.md && sh ./gradlew test",
+        "sed -n '1,240p' /tmp/SKILL.md && echo hello",
+        "sed -n '1,240p' /tmp/SKILL.md && sh ./gradlew test && echo hello",
+    ],
+)
+def test_does_not_rewrite_unsafe_compounds(command, monkeypatch):
+    monkeypatch.setattr(
+        "distill_hook.hook.shell_for_tool",
+        lambda _tool_name, _tool_input: ShellSpec("bash", "/bin/bash"),
+    )
+
+    assert handle_payload(payload(command)) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -n '1,240p' \"$(printf /tmp/SKILL.md)\" && sh ./gradlew test",
+        "sed -n '1,240p' \"`printf /tmp/SKILL.md`\" && sh ./gradlew test",
+    ],
+)
+def test_does_not_rewrite_sed_prelude_with_shell_substitution(command, monkeypatch):
+    monkeypatch.setattr(
+        "distill_hook.hook.shell_for_tool",
+        lambda _tool_name, _tool_input: ShellSpec("bash", "/bin/bash"),
+    )
+
+    assert handle_payload(payload(command)) is None
+
+
+def test_preserves_quoted_sed_prelude(monkeypatch):
+    monkeypatch.setattr(
+        "distill_hook.hook.shell_for_tool",
+        lambda _tool_name, _tool_input: ShellSpec("sh", "/bin/sh"),
+    )
+    prelude = "sed -n '1,240p' '/tmp/path with spaces/SKILL.md'"
+
+    response = handle_payload(payload(f"{prelude} && sh ./gradlew test"))
+    assert response is not None
+    rewritten = response["hookSpecificOutput"]["updatedInput"]["command"]
+
+    assert rewritten.startswith(f"{prelude} && ")
+
+
 def test_default_permission_mode_is_not_auto_approved(monkeypatch):
     p = payload("pytest -q")
     p["permission_mode"] = "default"
