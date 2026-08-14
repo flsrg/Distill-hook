@@ -41,6 +41,19 @@ _DISTILL_HOOK_HANDLER_RE = re.compile(
     r"(?:^|[/\\])distill-hook(?:\.exe)?(?:['\"])?\s+codex-hook\s*$",
     re.IGNORECASE,
 )
+_READ_ONLY_SED_PRELUDE_RE = re.compile(
+    r"""^\s*
+    (?P<prelude>
+        (?:/usr/bin/|/bin/)?sed
+        \s+-n
+        \s+(?:'[^'\r\n]*'|"[^"]*"|[^\s;&|<>\r\n]+)
+        \s+(?:'[^'\r\n]*'|"[^"]*"|[^\s;&|<>\r\n]+)
+    )
+    \s+&&\s+
+    (?P<tail>.+?)
+    \s*$""",
+    re.VERBOSE,
+)
 
 
 def encode_command(command: str) -> str:
@@ -91,6 +104,28 @@ def should_rewrite(command: str) -> bool:
     if re.search(r"\bfind\b.*\s-(?:exec|delete|execdir|ok)\b", normalized):
         return False
     return select_filter(normalized) is not None
+
+
+def _split_safe_read_only_prelude(command: str) -> tuple[str, str] | None:
+    match = _READ_ONLY_SED_PRELUDE_RE.match(command)
+    if match is None:
+        return None
+
+    prelude = match.group("prelude")
+    tail = match.group("tail")
+    try:
+        args = shlex.split(prelude, posix=True)
+    except ValueError:
+        return None
+
+    if len(args) != 4 or Path(args[0]).name != "sed" or args[1] != "-n":
+        return None
+    if re.fullmatch(r"\d+(?:,\d+)?p", args[2]) is None:
+        return None
+    if args[3].startswith("-"):
+        return None
+
+    return prelude, tail
 
 
 def _kind_for_path(path: str) -> str | None:
@@ -249,20 +284,36 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(tool_input, dict):
         return None
     command = tool_input.get("command")
-    if not isinstance(command, str) or not should_rewrite(command):
+    if not isinstance(command, str):
         return None
     shell = shell_for_tool(str(tool_name), tool_input)
     if shell is None:
         return None
+
+    rewrite_target = command
+    prelude: str | None = None
+    if not should_rewrite(command):
+        if shell.kind not in {"bash", "zsh", "sh"}:
+            return None
+        split = _split_safe_read_only_prelude(command)
+        if split is None:
+            return None
+        prelude, rewrite_target = split
+        if not should_rewrite(rewrite_target):
+            return None
+
     permission_mode = payload.get("permission_mode")
     if permission_mode not in SAFE_PERMISSION_MODES and not allow_default_mode():
         return None
+    rewritten = rewritten_command(rewrite_target, shell)
+    if prelude is not None:
+        rewritten = f"{prelude} && {rewritten}"
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
             "permissionDecisionReason": "Distill noisy command output before returning it to the model.",
-            "updatedInput": {"command": rewritten_command(command, shell)},
+            "updatedInput": {"command": rewritten},
         }
     }
 
