@@ -28,6 +28,7 @@ SAFE_START_RE = re.compile(
     r"yarn\s+(?:test|build)\b|"
     r"git\s+(?:status|log|diff)\b|gh\s+pr\s+diff\b|"
     r"(?:make|cmake|gradle|gradlew|mvn)\b|docker\s+(?:build|logs)\b|"
+    r"\./(?:[\w.-]+/)+gradlew(?=\s|$)|"
     r"terraform\s+plan\b|kubectl\s+logs\b|journalctl\b|"
     r"(?:rg|grep|find|fd|ls|tree)\b|tail\s+-n\b|cat\s+[^\s]+\.log\b"
     r")",

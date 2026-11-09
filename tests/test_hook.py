@@ -32,6 +32,18 @@ def test_does_not_rewrite_unknown_or_unsafe_shell_shape():
     assert handle_payload(payload("pytest $(cat args.txt)")) is None
     assert handle_payload(payload("rm -rf /tmp/x; pytest -q")) is None
     assert handle_payload(payload("pytest -q | tee results.txt")) is None
+    assert handle_payload(payload("./UA-android/gradlew test | tee build.log")) is None
+    assert handle_payload(payload("./UA-android/gradlew-helper test")) is None
+
+
+@pytest.mark.parametrize("launcher", ["", "sh "])
+def test_rewrites_gradle_wrapper_in_subdirectory(launcher):
+    command = f"{launcher}./UA-android/gradlew -p UA-android :application:testDevDebugUnitTest"
+
+    response = handle_payload(payload(command))
+    assert response is not None
+    rewritten = response["hookSpecificOutput"]["updatedInput"]["command"]
+    assert decode_command(shlex.split(rewritten)[-1]) == command
 
 
 def test_rewrites_noisy_tail_after_read_only_sed_prelude(monkeypatch):
